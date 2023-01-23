@@ -1,0 +1,356 @@
+
+---
+title: "ICU Analysis"
+author: "John Rand"
+date: "1/5/2023"
+output:
+  pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(lmtest)
+library("olsrr")
+library(class)
+library(gt)
+library(tidyverse)
+library(glue)
+library(ggplot2)
+library(car)
+library(randomForest)
+library(datasets)
+library(caret)
+library(ggthemes)
+require(gridExtra)
+
+```
+# **Problem Statement:** 
+Not all patients admitted to an ICU belong in the ICU. The criteria for which patients belong in an ICU are typically subjective.  It would be helpful to have a predictive model that identifies highest-risk patients during intake using factors that the medical staff can quickly access (without lengthy or complex tests). One way to identify the key factors for triaging ICU patients is to determine which factors have the highest association to mortality outcomes in the ICU and, therefore, indicate serious conditions.
+
+```{r, include=FALSE}
+load("icu.Rdata")
+```
+# **Data Description:** 
+The dataset for 200 ICU patients was a subset obtained from Hosmer D.W., Lemeshow, S., and Sturdivant, R.X. Applied Logistic Regression. 3rd ed., 2013. Accessible from http://www.umass.edu/statdata/statdata/data/icu.txt.\
+It contains the following variables:\
+- vital.status: categorical outcome of whether the patient survived until hospital discharge (lived), or did not (died)\
+- age: age, measured in years\
+- gender: gender, either male or female\
+– race: either white, black, or other\
+– type: type of admission, either elective or emergency\
+– service: the type of service the patient needed upon ICU admission, either medical or surgical\
+– conscious: level of consciousness at ICU admission, either no coma/stupor, deep stupor, or coma\
+– cancer: coded yes if cancer was part of the present problem, no if otherwise\
+– renal: coded yes if the patient had a history of chronic renal failure, no if otherwise\
+– infect.prob: yes if infection was probable, no if otherwise\
+– cpr: yes if CPR was administered prior to ICU admission, no if otherwise\
+– sys: measured in mm Hg. Typical systolic blood pressure ranges from 90 - 120 mm Hg.\
+– hr: measured in beats/min. Typical resting heart rate ranges from 60 - 100 bpm.\
+– previous: yes if previously admitted to an ICU within 6 months, no if otherwise\
+– fracture: coded yes if patient had a long bone, multiple, neck, single area, or hip fracture; no if otherwise\
+– creat: creatinine levels, measured in mg/dL. Typical ranges are 0.5 - 1.0 mg/dL. Elevated creatinine levels may be a sign of renal failure.\
+– PO2: oxygen partial pressure, measured in mm Hg. Normal arterial oxygen concentration is between 75-100 mm Hg, levels below 60 require supplemental oxygen.\
+– PH: normal blood pH is typically between 7.35 and 7.45. Low blood pH is indicative of acidosis, which can have serious consequences.\
+– PCO2: carbon dioxide partial pressure, measured in mm Hg. Normal arterial CO2 concentration is between 35-45 mm Hg. Values higher than 45 mm Hg is indicative of respiratory failure.\
+– bicarb: bicarbonate level, measured in mEq/L. Low bicarbonate levels are indicative of metabolic acidosis.\
+
+Note that columns P02, PH, PC02, and bicarb contain data from an arterial blood gas (ABG) test, which measures the amount of oxygen and carbon dioxide in the blood and also checks the blood’s acid-base balance. Excess acidity can indicate severe conditions, such as kidney failure, severe infection, toxicity, or complications from diabetes. The test does not require any special preparation and takes 5-10 min. Test results are available within 15 minutes.
+\newpage
+
+## **First, let’s check if the dataset has any missing values. The presence of missing values or incorrect data types and formats would require data cleaning prior to modeling.**\
+```{r, echo=FALSE}
+which(is.na(icu))
+```
+
+**The dataset has no missing values.**\
+
+
+## **Next, let’s explore the ICU study population demographics:**
+```{r, echo=FALSE}
+
+
+p.gender <- ggplot(icu, aes(x=gender, fill = gender)) + 
+    geom_bar()+ 
+    theme_hc() + 
+    scale_colour_hc() +
+    ggtitle("Gender\nDistribution")
+
+p.race <- ggplot(icu, aes(x=race, fill = race)) + 
+    geom_bar()+ 
+    theme_hc() + 
+    scale_colour_hc() +
+    ggtitle("Race\nDistribution")
+
+grid.arrange(
+  p.gender,
+  p.race,
+  nrow = 1
+
+)
+
+
+```
+
+```{r, echo=FALSE}
+
+
+p.gen.vit <- ggplot(icu, aes(x=gender, fill = vital.status)) + 
+    geom_bar()+ 
+    theme_hc() + 
+    scale_colour_hc() +
+    ggtitle("Gender vs\nVital Status")
+
+p.race.vit <- ggplot(icu, aes(x=race, fill = vital.status)) + 
+    geom_bar()+ 
+    theme_hc() + 
+    scale_colour_hc() +
+    ggtitle("Race vs\nVital Status")
+
+
+grid.arrange(
+  p.gen.vit,
+  p.race.vit,
+  nrow = 1
+
+)
+
+```
+
+
+The data sample of 200 ICU patients included more males (62%, 124), and primarily consisted of white patients (87.5%, 175). Only 7.5% (15) of the population were African American, and 5% (10) were other races. Overall, the survival rate was 80% (160). Among males the survival rate was  The median age of patients is 63, the mean is 57, with an age range of (16-92). 50% of patients are ages 49-70, 25% of the patients are ages 70-88 (upper quartile), and 25% of the patients are ages 18-49 (lower quartile).\
+
+```{r, include=FALSE}
+icu$age.categories <- as.factor(ifelse(icu$age < 29, "18-29",
+                     ifelse(icu$age < 40, "30-39",
+                     ifelse(icu$age < 50, "40-49",
+                     ifelse(icu$age < 60, "50-59",
+                     ifelse(icu$age < 70, "60-69",
+                     ifelse(icu$age < 80, "70-79", "Over 80")))))))
+```
+\newpage
+
+```{r, echo=FALSE}
+p.age <- ggplot(icu, aes(y=age)) + 
+    geom_boxplot(color = "black", fill = "gray")+ 
+    theme_hc() + 
+    scale_colour_hc() +
+    ggtitle("Race vs Vital Status")
+
+p.age.vit <- ggplot(icu, aes(x=age.categories, fill = vital.status)) + 
+    geom_bar()+ 
+    theme(text = element_text(size=20),
+        axis.text.x = element_text(angle=30, hjust=1))+
+    theme_hc() + 
+    scale_colour_hc() +
+    ggtitle("Vital Status by Age")
+
+p.age.vis <- ggplot(icu, aes(x=age.categories, fill = type)) + 
+    geom_bar()+ 
+    theme(text = element_text(size=20),
+        axis.text.x = element_text(angle=30, hjust=1))+
+    theme_hc() + 
+    scale_colour_hc() +
+    ggtitle("Type of Visit by Age")
+
+p.age.serv <- ggplot(icu, aes(x=age.categories, fill = service)) + 
+    geom_bar()+ 
+    theme(text = element_text(size=20),
+        axis.text.x = element_text(angle=30, hjust=1))+
+    theme_hc() + 
+    scale_colour_hc() +
+    ggtitle("Type of Service by Age")
+
+grid.arrange(
+  p.age,
+  p.age.vit,
+  nrow = 1
+
+)
+grid.arrange(
+  p.age.vis,
+  p.age.serv,
+  nrow = 1
+
+)
+
+```
+Roughly 75% of ICU visits are classified as emergency visits, as compared to 25% of elective visits. However, predominantly younger patients of ages 18-49 (89%, 59) were in the ICU for emergency reasons. Relatively fewer patients of ages 50-Over 80 (68%, 141) were admitted for emergency reasons, and 32% had elective visits. 
+About the same number of patients received medical interventions (46%) as surgical interventions, regardless of age. However, more deaths occurred for the older patients (50-Over 80) than for the younger patients (18-49). 
+
+\newpage
+
+```{r, echo=FALSE}
+
+icu$vital.status <- as.numeric(as.integer(factor(icu$vital.status)))
+icu$PO2 <- as.numeric(as.integer(factor(icu$PO2)))
+icu$PH <- as.numeric(as.integer(factor(icu$PH)))
+icu$PCO2 <- as.numeric(as.integer(factor(icu$PCO2)))
+icu$bicarb <- as.numeric(as.integer(factor(icu$bicarb)))
+
+```
+## Correlation test on ABG variables to determine if they are correlated with vital.status
+```{r, include=FALSE}
+#abg.aov <- aov(formula = vital.status ~ PO2 + PH + PCO2 + bicarb,
+ #                  data = icu)
+#summary(abg.aov)
+#t.test(icu$PO2, icu$vital.status, paired=FALSE)
+cor.test(icu$PO2, icu$vital.status, method = c("pearson"))
+cor.test(icu$PH, icu$vital.status, method = c("pearson"))
+cor.test(icu$PCO2, icu$vital.status, method = c("pearson"))
+cor.test(icu$bicarb, icu$vital.status, method = c("pearson"))
+```
+
+```{r, echo=FALSE}
+abg.tab <- matrix(c(0.243, 0.3179, 1, 0.1812), ncol = 1, byrow = TRUE)
+rownames(abg.tab) <- c('P02','PH','PC02', 'bicarb')
+colnames(abg.tab) <- c('P-Values')
+abg.tab <- as.table(abg.tab)
+abg.tab
+
+```
+
+\newpage
+
+
+
+```{r, include=FALSE}
+icu$gender <- as.numeric(as.integer(factor(icu$gender)))
+icu$renal <- as.numeric(as.integer(factor(icu$renal)))
+icu$infect.prob <- as.numeric(as.integer(factor(icu$infect.prob)))
+icu$cpr <- as.numeric(as.integer(factor(icu$cpr)))
+icu$cancer <- as.numeric(as.integer(factor(icu$cancer)))
+icu$previous <- as.numeric(as.integer(factor(icu$previous)))
+icu$conscious <- as.numeric(as.integer(factor(icu$conscious)))
+icu$fracture <- as.numeric(as.integer(factor(icu$fracture)))
+icu$service <- as.numeric(as.integer(factor(icu$service)))
+icu$race <- as.numeric(as.integer(factor(icu$race)))
+icu$type <- as.numeric(as.integer(factor(icu$type)))
+icu$creat <- as.numeric(as.integer(factor(icu$creat)))
+icu$age.categories <- as.numeric(as.integer(factor(icu$age.categories)))
+```
+\newpage
+
+```{r, include=FALSE}
+mod.all<- lm(vital.status ~ gender + race + service + cancer + renal + infect.prob +
+               cpr + sys + hr + previous + type + fracture + creat + conscious + age.categories,
+             data = icu)
+step(mod.all, direction = "both")
+
+```
+## **Linear regression on the variables that the stepwise function selected influence a patient's vital status significantly**
+```{r, echo = FALSE}
+mod.best <- lm(formula = vital.status ~ cancer + sys + previous + type + 
+    conscious + age.categories, data = icu)
+summary(mod.best)
+
+
+```
+\newpage
+## **Linear regression of the variables the paper noted as the most crucial to predicting a patients vital status**
+```{r, echo = FALSE}
+mod.best <- lm(formula = vital.status ~ cancer + sys + type + 
+    conscious + age.categories + cpr + infect.prob, data = icu)
+summary(mod.best)
+```
+The variables that the stepwise function selected had a higher R-Squared value than the variables from the paper when running a linear regression model. Indicating that on this subset of the data, the variables cancer, sys, previous, type, conscious and age groups make a better model than the variables the paper selected as most important.
+```{r, echo = FALSE}
+icu.sub <- icu[c("vital.status", "type", "sys", 
+                 "age.categories", "cancer", "previous", "conscious")]
+icu.sub$vital.status <- as.factor(icu.sub$vital.status)
+
+```
+
+\newpage
+
+## Random forest classification used to generate predictive model of a patient's vital status
+```{r, echo = FALSE}
+set.seed(222)
+ind <- sample(2, nrow(icu.sub), replace = TRUE, prob = c(0.7, 0.3))
+train <- icu.sub[ind==1,]
+test <- icu.sub[ind==2,]
+
+```
+
+```{r, echo = FALSE}
+rf <- randomForest(vital.status~., data=train, proximity=TRUE)
+print(rf)
+
+```
+## Accuracy of random forest classification on train data
+```{r, echo = FALSE}
+p1 <- predict(rf, train)
+
+confusionMatrix(p1, train$vital.status)
+```
+## Accuracy of random forest classification on test data
+```{r, echo = FALSE}
+
+p2 <- predict(rf, test)
+
+confusionMatrix(p2, test$vital.status)
+```
+
+```{r, echo = FALSE}
+varImpPlot(rf,
+           sort = T,
+           n.var = 6,
+           main = "Variable Importance")
+```
+\newpage
+
+## **Random forest classification on variables from original report**
+```{r, echo = FALSE}
+icu.sub.2 <- icu[c("vital.status", "type", "sys", 
+                 "age.categories", "cancer", "infect.prob", "conscious", "cpr")]
+icu.sub.2$vital.status <- as.factor(icu.sub$vital.status)
+
+```
+
+```{r, echo = FALSE}
+set.seed(222)
+ind.2 <- sample(2, nrow(icu.sub.2), replace = TRUE, prob = c(0.7, 0.3))
+train.2 <- icu.sub.2[ind.2 == 1,]
+test.2 <- icu.sub.2[ind.2 == 2,]
+
+```
+
+```{r, echo = FALSE}
+rf.2 <- randomForest(vital.status~., data = train.2, proximity=TRUE)
+print(rf.2)
+
+```
+
+## Accuracy of random forest classification on train data
+```{r, echo = FALSE}
+p1.2 <- predict(rf.2, train.2)
+
+confusionMatrix(p1.2, train.2$vital.status)
+```
+
+## Accuracy of random forest classification on test data
+```{r, echo = FALSE}
+
+p2.2 <- predict(rf.2, test.2)
+
+confusionMatrix(p2.2, test.2$vital.status)
+```
+
+```{r, echo = FALSE}
+varImpPlot(rf.2,
+           sort = T,
+           n.var = 7,
+           main = "Variable Importance")
+```
+\newpage
+
+## **Insights**\
+From the paper this report was based on, there was some slight differences in what was considered most important when determining a patient's vital status. This was done using a stepwise regression with vital.status as the dependant variable. The stepwise regression noted 6 variables of interest when determining a patient's vital status, those being systolic blood pressure, conscious, age group, type of visit, cancer, and if the patient was admitted within the past 6 months. \
+
+Running a random forest classification on a subset of the data with those 6 variables gave about an 86% accuracy when determining a patient's vital status.\ 
+
+The variables the paper noted as most important when classiying a patient's vital status were systolic blood pressure, conscious, age group, type of visit, cpr prior to admission, probable infection, and cancer.\
+
+Running a random forest classification on the variables the paper noted as most important on the same subset of the data gave about an 85% accuracy when determining a patient's vital status.\
+
+Between the two tests there is a slight difference in the overall accuracy. It's interesting to note that on a subset of the data the variables best for determining a patient's vital status differ from the orginal paper. This could be due to the fact that it is a subset of the data and note the whole sample size.\
